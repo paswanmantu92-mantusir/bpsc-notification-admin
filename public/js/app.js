@@ -240,7 +240,8 @@ async function loadHistory() {
                 : "Processing";
 
             details.textContent =
-                "Category: " + item.category +
+                "Status: " + (item.status || "completed") +
+                " | Category: " + item.category +
                 " | Target: " + item.target +
                 " | Devices: " + (item.totalDevices || 0) +
                 " | Success: " + (item.successCount || 0) +
@@ -248,6 +249,12 @@ async function loadHistory() {
                 " | Date: " + date;
 
             card.append(heading, message, details);
+            if (item.error) {
+                const error = document.createElement("p");
+                error.className = "history-error";
+                error.textContent = "Error: " + item.error;
+                card.appendChild(error);
+            }
             container.appendChild(card);
         });
 

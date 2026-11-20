@@ -164,11 +164,7 @@ exports.sendAdminNotification = onCall(
         .sendEachForMulticast({
           tokens: batch.map(device => device.token),
 
-          notification: {
-            title: title.trim(),
-            body: body.trim()
-          },
-
+          // Data-only payload lets the Android app render using its category channel.
           data: {
             title: title.trim(),
             body: body.trim(),
