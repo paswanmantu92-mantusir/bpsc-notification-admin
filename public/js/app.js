@@ -11,15 +11,30 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 
 const auth = firebase.auth();
-
-const functions = firebase.app().functions("asia-south1");
-
-const sendFunction = functions.httpsCallable("sendAdminNotification");
-const historyFunction = functions.httpsCallable("getAdminNotificationHistory");
+const db = firebase.firestore();
 
 const ADMIN_EMAIL = "paswanmantu92@gmail.com";
+const APP_ID = "bpsc_teacher_practice";
+
+const CATEGORIES = [
+    "announcement",
+    "exam",
+    "tre",
+    "questions",
+    "materials",
+    "general"
+];
 
 auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
+function isAdmin(user) {
+    return !!(
+        user &&
+        user.emailVerified &&
+        user.email &&
+        user.email.toLowerCase() === ADMIN_EMAIL
+    );
+}
 
 function showError(message) {
     document.getElementById("loginError").textContent = message;
@@ -36,11 +51,14 @@ async function adminLogin() {
             throw new Error("Administrator email not authorized.");
         }
 
-        const result = await auth.signInWithEmailAndPassword(email, password);
+        const result = await auth.signInWithEmailAndPassword(
+            email,
+            password
+        );
 
         if (!result.user.emailVerified) {
             await auth.signOut();
-            throw new Error("Please verify your administrator email.");
+            throw new Error("Please verify administrator email.");
         }
 
     } catch (error) {
@@ -56,9 +74,7 @@ auth.onAuthStateChanged(async user => {
     const login = document.getElementById("loginPage");
     const dashboard = document.getElementById("dashboard");
 
-    if (user && user.emailVerified &&
-        user.email.toLowerCase() === ADMIN_EMAIL) {
-
+    if (isAdmin(user)) {
         login.hidden = true;
         dashboard.hidden = false;
 
@@ -95,22 +111,41 @@ async function sendNotification() {
     const button = document.getElementById("sendButton");
     const status = document.getElementById("sendStatus");
 
+    if (!isAdmin(auth.currentUser)) {
+        status.textContent = "Administrator login required.";
+        return;
+    }
+
     const title = document.getElementById("title").value.trim();
     const body = document.getElementById("body").value.trim();
     const category = document.getElementById("category").value;
     const target = document.getElementById("target").value;
 
-    const userIds = document.getElementById("userIds")
-        .value.split(/\s+/)
-        .map(x => x.trim())
-        .filter(Boolean);
+    const userIds = [
+        ...new Set(
+            document.getElementById("userIds")
+                .value.split(/\s+/)
+                .map(x => x.trim())
+                .filter(Boolean)
+        )
+    ];
 
     if (!title || !body) {
         status.textContent = "Enter notification title and message.";
         return;
     }
 
-    if (target === "selected" && userIds.length === 0) {
+    if (title.length > 100 || body.length > 2000) {
+        status.textContent = "Title or message is too long.";
+        return;
+    }
+
+    if (!CATEGORIES.includes(category)) {
+        status.textContent = "Invalid notification category.";
+        return;
+    }
+
+    if (target === "selected" && !userIds.length) {
         status.textContent = "Enter at least one Firebase UID.";
         return;
     }
@@ -122,47 +157,49 @@ async function sendNotification() {
 
     if (!confirm(
         target === "all"
-        ? "Send this notification to ALL registered app devices?"
-        : "Send this notification to " + userIds.length + " selected users?"
-    )) return;
+            ? "Send notification to ALL registered app devices?"
+            : "Send notification to " + userIds.length + " selected users?"
+    )) {
+        return;
+    }
 
     button.disabled = true;
-    button.textContent = "Sending...";
-
+    button.textContent = "Adding to Queue...";
     status.textContent = "Connecting to Firebase...";
 
     try {
-        const result = await sendFunction({
+        const queueRef = db.collection("notificationQueue").doc();
+
+        await queueRef.set({
             title,
             body,
             category,
             target,
-            userIds
+            userIds: target === "selected" ? userIds : [],
+            status: "pending",
+            createdBy: auth.currentUser.uid,
+            adminEmail: ADMIN_EMAIL,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
 
-        const data = result.data;
-
         status.textContent =
-            "Notification completed! Success: " +
-            data.successCount +
-            " | Failed: " +
-            data.failureCount +
-            " | Total devices: " +
-            data.totalDevices;
+            "Notification queued successfully! ID: " + queueRef.id +
+            ". GitHub Actions will process it automatically.";
 
         document.getElementById("title").value = "";
         document.getElementById("body").value = "";
-
         document.getElementById("userIds").value = "";
 
         await loadOverview();
 
     } catch (error) {
         status.textContent = "Error: " + error.message;
-    }
+        console.error(error);
 
-    button.disabled = false;
-    button.textContent = "Send Notification";
+    } finally {
+        button.disabled = false;
+        button.textContent = "Send Notification";
+    }
 }
 
 async function loadHistory() {
@@ -171,44 +208,52 @@ async function loadHistory() {
     container.textContent = "Loading notification history...";
 
     try {
-        const result = await historyFunction();
-
-        const notifications = result.data.notifications || [];
+        const snapshot = await db
+            .collection("adminNotificationHistory")
+            .orderBy("createdAt", "desc")
+            .limit(100)
+            .get();
 
         container.innerHTML = "";
 
-        if (!notifications.length) {
+        if (snapshot.empty) {
             container.textContent = "No notifications sent yet.";
             return;
         }
 
-        notifications.forEach(item => {
+        snapshot.forEach(doc => {
+            const item = doc.data();
+
             const card = document.createElement("div");
             card.className = "history-item";
 
             const heading = document.createElement("h3");
-            heading.textContent = item.title;
+            heading.textContent = item.title || "Notification";
 
             const message = document.createElement("p");
-            message.textContent = item.body;
+            message.textContent = item.body || "";
 
             const details = document.createElement("small");
+
+            const date = item.createdAt
+                ? item.createdAt.toDate().toLocaleString()
+                : "Processing";
 
             details.textContent =
                 "Category: " + item.category +
                 " | Target: " + item.target +
-                " | Devices: " + item.totalDevices +
-                " | Success: " + item.successCount +
-                " | Failed: " + item.failureCount +
-                " | Date: " + (item.createdAt || "Unknown");
+                " | Devices: " + (item.totalDevices || 0) +
+                " | Success: " + (item.successCount || 0) +
+                " | Failed: " + (item.failureCount || 0) +
+                " | Date: " + date;
 
             card.append(heading, message, details);
-
             container.appendChild(card);
         });
 
     } catch (error) {
-        container.textContent = "Unable to load history: " + error.message;
+        container.textContent =
+            "Unable to load history: " + error.message;
     }
 }
 
@@ -224,25 +269,32 @@ async function loadOverview() {
     });
 
     try {
-        const statsFunction =
-            functions.httpsCallable("getAdminDashboardStats");
+        const [users, devices, notifications] = await Promise.all([
 
-        const result = await statsFunction();
+            db.collection("users").get(),
+
+            db.collectionGroup("devices")
+                .where("app", "==", APP_ID)
+                .get(),
+
+            db.collection("adminNotificationHistory").get()
+
+        ]);
 
         document.getElementById("userCount").textContent =
-            result.data.users;
+            users.size;
 
         document.getElementById("deviceCount").textContent =
-            result.data.devices;
+            devices.size;
 
         document.getElementById("notificationCount").textContent =
-            result.data.notifications;
+            notifications.size;
 
     } catch (error) {
         ids.forEach(id => {
             document.getElementById(id).textContent = "Unavailable";
         });
 
-        console.error(error);
+        console.error("Dashboard statistics error:", error);
     }
 }
