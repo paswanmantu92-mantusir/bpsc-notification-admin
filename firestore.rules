@@ -2,7 +2,6 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-
     function signedIn() {
       return request.auth != null;
     }
@@ -31,10 +30,17 @@ service cloud.firestore {
 
       match /devices/{deviceId} {
         allow read: if isOwner(uid) || isAdmin();
-        allow write: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && request.resource.data.app == "bpsc_teacher_practice"
+          && request.resource.data.platform == "android"
+          && request.resource.data.token is string
+          && request.resource.data.token.size() > 0;
+        allow delete: if isOwner(uid);
       }
     }
 
+    // Collection-group read for the trusted worker's Admin SDK is not governed
+    // by these rules; this allows the verified admin dashboard to inspect devices.
     match /{path=**}/devices/{deviceId} {
       allow read: if isAdmin();
     }
@@ -48,7 +54,12 @@ service cloud.firestore {
         && request.resource.data.title.size() > 0
         && request.resource.data.title.size() <= 100
         && request.resource.data.body.size() > 0
-        && request.resource.data.body.size() <= 2000;
+        && request.resource.data.body.size() <= 2000
+        && request.resource.data.category in ["announcement", "exam", "tre", "questions", "materials", "general"]
+        && request.resource.data.target in ["all", "selected"]
+        && request.resource.data.userIds is list
+        && request.resource.data.userIds.size() <= 500
+        && (request.resource.data.target == "all" || request.resource.data.userIds.size() > 0);
 
       allow read: if isAdmin();
       allow update, delete: if false;
