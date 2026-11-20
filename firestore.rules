@@ -1,0 +1,25 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    match /users/{uid} {
+      // Only the signed-in owner can access their profile.
+      allow read, create, update, delete: if isOwner(uid);
+
+      // Private test history.
+      match /testHistory/{historyId} {
+        allow read, create, update, delete: if isOwner(uid);
+      }
+
+      // Private learning statistics.
+      match /stats/{statsId} {
+        allow read, create, update, delete: if isOwner(uid);
+      }
+    }
+  }
+}

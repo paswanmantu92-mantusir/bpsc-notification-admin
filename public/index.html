@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BPSC Admin | Notification Center</title>
+
+<link rel="stylesheet" href="css/style.css">
+
+<script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-functions-compat.js"></script>
+</head>
+
+<body>
+
+<div id="loginPage" class="login-page">
+  <div class="login-card">
+    <h1>📢 BPSC Admin</h1>
+    <p>Notification Management Center</p>
+
+    <input id="email" type="email"
+      placeholder="Administrator email">
+
+    <input id="password" type="password"
+      placeholder="Password">
+
+    <button onclick="adminLogin()">Login</button>
+
+    <p id="loginError"></p>
+  </div>
+</div>
+
+<div id="dashboard" hidden>
+
+<header>
+  <div>
+    <h2>BPSC Notification Center</h2>
+    <small>Administrator Dashboard</small>
+  </div>
+  <button onclick="adminLogout()">Logout</button>
+</header>
+
+<nav>
+  <button onclick="showSection('overview')">Overview</button>
+  <button onclick="showSection('send')">Send Notification</button>
+  <button onclick="showSection('history')">History</button>
+</nav>
+
+<main>
+
+<section id="overview" class="section">
+  <h2>Dashboard Overview</h2>
+
+  <div class="stats">
+    <div class="stat">
+      <span>Registered Users</span>
+      <strong id="userCount">—</strong>
+    </div>
+
+    <div class="stat">
+      <span>Registered Devices</span>
+      <strong id="deviceCount">—</strong>
+    </div>
+
+    <div class="stat">
+      <span>Notifications Sent</span>
+      <strong id="notificationCount">—</strong>
+    </div>
+  </div>
+</section>
+
+<section id="send" class="section" hidden>
+  <h2>Send New Notification</h2>
+
+  <label>Notification Title</label>
+  <input id="title" maxlength="100"
+    placeholder="Enter notification title">
+
+  <label>Message</label>
+  <textarea id="body" maxlength="2000"
+    placeholder="Write your notification message"></textarea>
+
+  <label>Category</label>
+  <select id="category">
+    <option value="announcement">Important Announcement</option>
+    <option value="exam">Exam Updates</option>
+    <option value="tre">TRE Notifications</option>
+    <option value="questions">New Questions</option>
+    <option value="materials">Study Materials</option>
+    <option value="general">General Updates</option>
+  </select>
+
+  <label>Recipients</label>
+  <select id="target" onchange="toggleUserSelection()">
+    <option value="all">All App Users</option>
+    <option value="selected">Selected Users</option>
+  </select>
+
+  <div id="userSelection" hidden>
+    <p>Enter user Firebase UIDs (one per line)</p>
+    <textarea id="userIds"
+      placeholder="Firebase UID"></textarea>
+  </div>
+
+  <button id="sendButton" onclick="sendNotification()">
+    Send Notification
+  </button>
+
+  <p id="sendStatus"></p>
+</section>
+
+<section id="history" class="section" hidden>
+  <h2>Notification History</h2>
+  <button onclick="loadHistory()">Refresh History</button>
+  <div id="historyList"></div>
+</section>
+
+</main>
+</div>
+
+<script src="js/app.js"></script>
+
+</body>
+</html>
