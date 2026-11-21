@@ -2,12 +2,16 @@ import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 
-const credentials = JSON.parse(
-  process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-);
+const rawCredentials = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
-if (!credentials.project_id || credentials.project_id !== "termux-apps") {
-  throw new Error("Invalid Firebase service account.");
+if (!rawCredentials) {
+  throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON secret is missing.");
+}
+
+const credentials = JSON.parse(rawCredentials);
+
+if (credentials.project_id !== "termux-apps") {
+  throw new Error("Invalid Firebase service account project.");
 }
 
 if (!getApps().length) {
@@ -18,12 +22,85 @@ const db = getFirestore();
 const messaging = getMessaging();
 
 const APP_ID = "bpsc_teacher_practice";
+const ADMIN_EMAIL = "paswanmantu92@gmail.com";
+
+const CATEGORIES = [
+  "announcement",
+  "exam",
+  "tre",
+  "questions",
+  "materials",
+  "general"
+];
+
+function validateNotification(data) {
+  if (!data || typeof data !== "object") {
+    throw new Error("Invalid notification document.");
+  }
+
+  if (
+    typeof data.title !== "string" ||
+    data.title.trim().length === 0 ||
+    data.title.length > 100
+  ) {
+    throw new Error("Invalid notification title.");
+  }
+
+  if (
+    typeof data.body !== "string" ||
+    data.body.trim().length === 0 ||
+    data.body.length > 2000
+  ) {
+    throw new Error("Invalid notification body.");
+  }
+
+  if (!CATEGORIES.includes(data.category)) {
+    throw new Error("Invalid notification category.");
+  }
+
+  if (!["all", "selected"].includes(data.target)) {
+    throw new Error("Invalid notification target.");
+  }
+
+  if (
+    typeof data.createdBy !== "string" ||
+    !data.createdBy.trim()
+  ) {
+    throw new Error("Invalid notification creator.");
+  }
+
+  if (data.adminEmail !== ADMIN_EMAIL) {
+    throw new Error("Invalid notification administrator.");
+  }
+
+  if (!Array.isArray(data.userIds) || data.userIds.length > 500) {
+    throw new Error("Invalid user ID list.");
+  }
+
+  if (
+    data.userIds.some(uid =>
+      typeof uid !== "string" ||
+      !uid.trim() ||
+      uid.length > 128 ||
+      uid.includes("/")
+    )
+  ) {
+    throw new Error("Invalid Firebase UID in recipient list.");
+  }
+
+  if (data.target === "all" && data.userIds.length !== 0) {
+    throw new Error("All-users notification must have an empty user list.");
+  }
+
+  if (data.target === "selected" && data.userIds.length === 0) {
+    throw new Error("Selected-users notification has no recipients.");
+  }
+}
 
 async function processNotification(doc) {
   const ref = doc.ref;
   const data = doc.data();
 
-  // Claim the job to prevent duplicate processing.
   const claimed = await db.runTransaction(async tx => {
     const current = await tx.get(ref);
 
@@ -41,9 +118,21 @@ async function processNotification(doc) {
 
   if (!claimed) return;
 
-  let devices = [];
+  let totalDevices = 0;
+  let attemptedDevices = 0;
+  let success = 0;
+  let failure = 0;
+  let invalidTokensRemoved = 0;
+
+  const historyRef = db
+    .collection("adminNotificationHistory")
+    .doc(doc.id);
 
   try {
+    validateNotification(data);
+
+    let devices = [];
+
     if (data.target === "all") {
       const snapshot = await db
         .collectionGroup("devices")
@@ -52,11 +141,7 @@ async function processNotification(doc) {
 
       devices = snapshot.docs;
     } else {
-      const ids = [...new Set(data.userIds || [])];
-
-      if (!ids.length || ids.length > 500) {
-        throw new Error("Invalid selected user list.");
-      }
+      const ids = [...new Set(data.userIds)];
 
       const results = await Promise.all(
         ids.map(uid =>
@@ -68,7 +153,7 @@ async function processNotification(doc) {
         )
       );
 
-      devices = results.flatMap(s => s.docs);
+      devices = results.flatMap(snapshot => snapshot.docs);
     }
 
     const unique = new Map();
@@ -76,21 +161,27 @@ async function processNotification(doc) {
     for (const device of devices) {
       const token = device.get("token");
 
-      if (typeof token === "string" && token.length > 0) {
-        unique.set(token, { ref: device.ref, token });
+      if (typeof token === "string" && token.trim()) {
+        unique.set(token, {
+          ref: device.ref,
+          token
+        });
       }
     }
 
     const list = [...unique.values()];
-    let success = 0;
-    let failure = 0;
+    totalDevices = list.length;
+
     const invalid = [];
 
     for (let i = 0; i < list.length; i += 500) {
       const batch = list.slice(i, i + 500);
 
+      // If the request throws, delivery of this batch is uncertain.
+      attemptedDevices += batch.length;
+
       const result = await messaging.sendEachForMulticast({
-        tokens: batch.map(x => x.token),
+        tokens: batch.map(item => item.token),
 
         notification: {
           title: data.title,
@@ -127,16 +218,22 @@ async function processNotification(doc) {
     }
 
     for (let i = 0; i < invalid.length; i += 450) {
-      const batch = db.batch();
+      const deleteBatch = db.batch();
 
-      invalid.slice(i, i + 450).forEach(ref => batch.delete(ref));
+      invalid.slice(i, i + 450).forEach(deviceRef => {
+        deleteBatch.delete(deviceRef);
+      });
 
-      await batch.commit();
+      await deleteBatch.commit();
+      invalidTokensRemoved += Math.min(450, invalid.length - i);
     }
 
-    const historyRef = db
-      .collection("adminNotificationHistory")
-      .doc(doc.id);
+    const historyStatus =
+      totalDevices === 0
+        ? "no_devices"
+        : failure > 0
+          ? "completed_with_failures"
+          : "sent";
 
     const batch = db.batch();
 
@@ -145,10 +242,14 @@ async function processNotification(doc) {
       body: data.body,
       category: data.category,
       target: data.target,
-      totalDevices: list.length,
+      status: historyStatus,
+      deliveryStatus: "results_known",
+      totalDevices,
+      attemptedDevices,
       successCount: success,
       failureCount: failure,
-      invalidTokensRemoved: invalid.length,
+      unknownCount: 0,
+      invalidTokensRemoved,
       sentBy: data.createdBy,
       createdAt: FieldValue.serverTimestamp()
     });
@@ -157,22 +258,109 @@ async function processNotification(doc) {
       status: "completed",
       successCount: success,
       failureCount: failure,
-      totalDevices: list.length,
+      totalDevices,
       completedAt: FieldValue.serverTimestamp()
     });
 
     await batch.commit();
 
-    console.log(`Completed ${doc.id}: ${success} successful, ${failure} failed`);
+    console.log(
+      `Completed ${doc.id}: ${success} successful, ${failure} failed, ${totalDevices} devices`
+    );
 
   } catch (error) {
-    console.error("Notification failed:", doc.id, error);
+    const errorMessage = String(error?.message || error).slice(0, 500);
 
-    await ref.update({
+    const unknownCount = Math.max(
+      0,
+      attemptedDevices - success - failure
+    );
+
+    const deliveryStatus =
+      unknownCount > 0
+        ? success > 0
+          ? "partial_or_unknown"
+          : "unknown"
+        : attemptedDevices > 0
+          ? "results_known"
+          : "not_sent";
+
+    console.error("Notification failed:", doc.id, errorMessage);
+
+    const historyData = {
+      title: typeof data.title === "string" ? data.title : "",
+      body: typeof data.body === "string" ? data.body : "",
+      category: typeof data.category === "string" ? data.category : "unknown",
+      target: typeof data.target === "string" ? data.target : "unknown",
       status: "failed",
-      error: String(error.message).slice(0, 500),
-      completedAt: FieldValue.serverTimestamp()
-    });
+      deliveryStatus,
+      totalDevices,
+      attemptedDevices,
+      successCount: success,
+      failureCount: failure,
+      unknownCount,
+      invalidTokensRemoved,
+      error: errorMessage,
+      sentBy: typeof data.createdBy === "string" ? data.createdBy : "",
+      createdAt: FieldValue.serverTimestamp()
+    };
+
+    // Try to record both queue failure and history atomically.
+    try {
+      const batch = db.batch();
+
+      batch.update(ref, {
+        status: "failed",
+        error: errorMessage,
+        successCount: success,
+        failureCount: failure,
+        totalDevices,
+        attemptedDevices,
+        unknownCount,
+        completedAt: FieldValue.serverTimestamp()
+      });
+
+      batch.set(historyRef, historyData);
+
+      await batch.commit();
+
+    } catch (recordError) {
+      console.error(
+        "Atomic failure-history recording failed:",
+        recordError.message || recordError
+      );
+
+      // Preserve at least the queue failure state if possible.
+      try {
+        await ref.update({
+          status: "failed",
+          error: errorMessage,
+          successCount: success,
+          failureCount: failure,
+          totalDevices,
+          attemptedDevices,
+          unknownCount,
+          completedAt: FieldValue.serverTimestamp()
+        });
+      } catch (queueError) {
+        console.error(
+          "Unable to update failed queue item:",
+          queueError.message || queueError
+        );
+      }
+
+      try {
+        await historyRef.set(historyData);
+      } catch (historyError) {
+        console.error(
+          "Unable to write failure history:",
+          historyError.message || historyError
+        );
+      }
+    }
+
+    // Never automatically retry a failed notification.
+    throw error;
   }
 }
 
@@ -185,11 +373,29 @@ async function main() {
 
   console.log("Pending notifications:", pending.size);
 
+  let failedCount = 0;
+
   for (const doc of pending.docs) {
-    await processNotification(doc);
+    try {
+      await processNotification(doc);
+    } catch (error) {
+      failedCount++;
+
+      console.error(
+        "Queue item failed:",
+        doc.id,
+        error.message || error
+      );
+    }
   }
 
-  console.log("Worker finished.");
+  console.log("Worker finished. Failed notifications:", failedCount);
+
+  if (failedCount > 0) {
+    throw new Error(
+      `${failedCount} notification(s) failed. Check queue and history.`
+    );
+  }
 }
 
 main().catch(error => {

@@ -82,5 +82,3 @@ credentials/
 node_modules/
 
 # Local backups
-functions/index.js.initial-backup
-functions/index.js.before-duplicate-fix
