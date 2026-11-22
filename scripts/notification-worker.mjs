@@ -364,7 +364,83 @@ async function processNotification(doc) {
   }
 }
 
+
+async function recoverStaleProcessing() {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+
+  const processing = await db
+    .collection("notificationQueue")
+    .where("status", "==", "processing")
+    .limit(50)
+    .get();
+
+  for (const doc of processing.docs) {
+    const startedAt = doc.get("startedAt");
+
+    if (
+      !startedAt ||
+      typeof startedAt.toMillis !== "function" ||
+      startedAt.toMillis() > cutoff
+    ) {
+      continue;
+    }
+
+    const reason =
+      "Worker lease expired. Delivery may be uncertain; verify before manually retrying.";
+
+    const recovered = await db.runTransaction(async tx => {
+      const current = await tx.get(doc.ref);
+
+      if (
+        !current.exists ||
+        current.get("status") !== "processing"
+      ) {
+        return false;
+      }
+
+      const currentStartedAt = current.get("startedAt");
+
+      if (
+        !currentStartedAt ||
+        currentStartedAt.toMillis() > cutoff
+      ) {
+        return false;
+      }
+
+      tx.update(doc.ref, {
+        status: "failed",
+        error: reason,
+        completedAt: FieldValue.serverTimestamp()
+      });
+
+      return true;
+    });
+
+    if (!recovered) continue;
+
+    await db
+      .collection("adminNotificationHistory")
+      .doc(doc.id)
+      .set({
+        status: "failed",
+        title: doc.get("title") || "",
+        body: doc.get("body") || "",
+        category: doc.get("category") || "general",
+        target: doc.get("target") || "all",
+        deliveryStatus: "unknown",
+        error: reason,
+        sentBy: doc.get("createdBy") || null,
+        createdAt: FieldValue.serverTimestamp()
+      }, { merge: true });
+
+    console.error(
+      `Marked stale notification ${doc.id} as failed; manual review required.`
+    );
+  }
+}
+
 async function main() {
+  await recoverStaleProcessing();
   const pending = await db
     .collection("notificationQueue")
     .where("status", "==", "pending")
