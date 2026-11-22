@@ -6,6 +6,15 @@ on:
 
   workflow_dispatch:
 
+  push:
+    branches:
+      - main
+      - fix/fcm-github-actions
+
+  pull_request:
+    branches:
+      - main
+
 permissions:
   contents: read
 
@@ -14,7 +23,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
+  validate:
+    name: Validate Application
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Validate notification worker
+        run: node --check scripts/notification-worker.mjs
+
+      - name: Validate dashboard JavaScript
+        run: node --check public/js/app.js
+
+      - name: Validate Firebase indexes
+        run: python -m json.tool firestore.indexes.json > /dev/null
+
+      - name: Validate Firebase configuration
+        run: python -m json.tool firebase.json > /dev/null
+
   send-notifications:
+    name: Process Notification Queue
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
