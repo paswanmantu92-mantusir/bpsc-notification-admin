@@ -145,6 +145,16 @@ async function sendNotification() {
         return;
     }
 
+    if (!["all", "selected"].includes(target)) {
+        status.textContent = "Invalid notification recipient.";
+        return;
+    }
+
+    if (userIds.some(uid => uid.length > 128)) {
+        status.textContent = "One or more Firebase UIDs are invalid.";
+        return;
+    }
+
     if (target === "selected" && !userIds.length) {
         status.textContent = "Enter at least one Firebase UID.";
         return;
@@ -221,6 +231,20 @@ async function loadHistory() {
             return;
         }
 
+        const statusLabels = {
+            sent: "SENT",
+            failed: "FAILED",
+            no_devices: "NO DEVICES",
+            completed_with_failures: "COMPLETED WITH FAILURES"
+        };
+
+        const deliveryLabels = {
+            results_known: "RESULTS KNOWN",
+            unknown: "DELIVERY UNKNOWN",
+            partial_or_unknown: "PARTIAL / UNKNOWN",
+            not_sent: "NOT SENT"
+        };
+
         snapshot.forEach(doc => {
             const item = doc.data();
 
@@ -233,28 +257,60 @@ async function loadHistory() {
             const message = document.createElement("p");
             message.textContent = item.body || "";
 
+            const status = document.createElement("div");
+            const statusKey = item.status || "unknown";
+
+            status.className =
+                "history-status status-" +
+                statusKey.replace(/[^a-z0-9_-]/gi, "");
+
+            status.textContent =
+                statusLabels[statusKey] || statusKey.toUpperCase();
+
             const details = document.createElement("small");
 
-            const date = item.createdAt
+            const date = item.createdAt &&
+                typeof item.createdAt.toDate === "function"
                 ? item.createdAt.toDate().toLocaleString()
                 : "Processing";
 
             details.textContent =
-                "Status: " + (item.status || "completed") +
-                " | Category: " + item.category +
-                " | Target: " + item.target +
-                " | Devices: " + (item.totalDevices || 0) +
-                " | Success: " + (item.successCount || 0) +
-                " | Failed: " + (item.failureCount || 0) +
+                "Category: " + (item.category || "Unknown") +
+                " | Target: " + (item.target || "Unknown") +
+                " | Total devices: " + (item.totalDevices ?? 0) +
+                " | Attempted: " + (item.attemptedDevices ?? 0) +
+                " | Success: " + (item.successCount ?? 0) +
+                " | Failed: " + (item.failureCount ?? 0) +
+                " | Unknown: " + (item.unknownCount ?? 0) +
+                " | Invalid tokens removed: " +
+                (item.invalidTokensRemoved ?? 0) +
                 " | Date: " + date;
 
-            card.append(heading, message, details);
+            const delivery = document.createElement("p");
+            delivery.className = "history-delivery";
+
+            const deliveryKey = item.deliveryStatus || "unknown";
+
+            delivery.textContent =
+                "Delivery: " +
+                (deliveryLabels[deliveryKey] ||
+                 deliveryKey.toUpperCase());
+
+            card.append(
+                heading,
+                message,
+                status,
+                delivery,
+                details
+            );
+
             if (item.error) {
                 const error = document.createElement("p");
                 error.className = "history-error";
                 error.textContent = "Error: " + item.error;
                 card.appendChild(error);
             }
+
             container.appendChild(card);
         });
 

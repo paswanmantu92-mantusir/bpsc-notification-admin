@@ -47,19 +47,44 @@ service cloud.firestore {
 
     match /notificationQueue/{notificationId} {
       allow create: if isAdmin()
+        && request.resource.data.keys().hasAll([
+          "title", "body", "category", "target",
+          "userIds", "status", "createdBy",
+          "adminEmail", "createdAt"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "title", "body", "category", "target",
+          "userIds", "status", "createdBy",
+          "adminEmail", "createdAt"
+        ])
         && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.adminEmail == request.auth.token.email
         && request.resource.data.status == "pending"
         && request.resource.data.title is string
-        && request.resource.data.body is string
         && request.resource.data.title.size() > 0
         && request.resource.data.title.size() <= 100
+        && request.resource.data.body is string
         && request.resource.data.body.size() > 0
         && request.resource.data.body.size() <= 2000
-        && request.resource.data.category in ["announcement", "exam", "tre", "questions", "materials", "general"]
+        && request.resource.data.category in [
+          "announcement", "exam", "tre",
+          "questions", "materials", "general"
+        ]
         && request.resource.data.target in ["all", "selected"]
         && request.resource.data.userIds is list
         && request.resource.data.userIds.size() <= 500
-        && (request.resource.data.target == "all" || request.resource.data.userIds.size() > 0);
+        && (
+          (
+            request.resource.data.target == "all"
+            && request.resource.data.userIds.size() == 0
+          )
+          ||
+          (
+            request.resource.data.target == "selected"
+            && request.resource.data.userIds.size() > 0
+          )
+        )
+        && request.resource.data.createdAt == request.time;
 
       allow read: if isAdmin();
       allow update, delete: if false;
